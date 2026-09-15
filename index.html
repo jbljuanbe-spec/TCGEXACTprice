@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Precio Justo Pokémon</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%83%8F%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=Space+Grotesk:wght@400;500;600;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button id="btn-theme" class="theme-toggle" aria-label="Cambiar tema" title="Cambiar tema">◐</button>
+    <div class="brand">
+      <h1>Precio Justo <span>Pokémon</span></h1>
+      <p class="subtitle">Adivina el precio de mercado de Cardmarket</p>
+    </div>
+  </header>
+
+  <main>
+    <section id="screen-modo" class="panel">
+      <h2>¿Cómo jugáis?</h2>
+      <button id="btn-modo-local" class="btn-cta">Mismo dispositivo</button>
+      <p class="modo-desc">Os pasáis el móvil o el portátil por turnos de ronda.</p>
+      <button id="btn-modo-online" class="btn-secondary">Sala online con amigos</button>
+      <p class="modo-desc">Cada uno desde su móvil, todos adivináis a la vez.</p>
+    </section>
+
+    <section id="screen-setup" class="panel" hidden>
+      <button type="button" id="btn-setup-volver" class="btn-volver">← Cambiar modo</button>
+      <h2>Nueva partida</h2>
+
+      <div class="field">
+        <span class="field-label">Jugadores</span>
+        <div id="players-picker" class="segmented" role="group" aria-label="Número de jugadores">
+          <button type="button" class="segmented-option" data-value="1">1</button>
+          <button type="button" class="segmented-option" data-value="2">2</button>
+          <button type="button" class="segmented-option" data-value="3">3</button>
+          <button type="button" class="segmented-option" data-value="4">4</button>
+        </div>
+      </div>
+
+      <div id="player-names" class="player-names"></div>
+
+      <div class="field">
+        <span class="field-label">Rondas</span>
+        <div id="rounds-picker" class="segmented" role="group" aria-label="Número de rondas">
+          <button type="button" class="segmented-option" data-value="5">5</button>
+          <button type="button" class="segmented-option" data-value="10">10</button>
+          <button type="button" class="segmented-option" data-value="15">15</button>
+        </div>
+      </div>
+
+      <button id="btn-start" class="btn-cta">Empezar partida</button>
+    </section>
+
+    <section id="screen-round" class="panel" hidden>
+      <div class="round-header">
+        <span id="round-badge" class="badge"></span>
+        <div id="scoreboard" class="scoreboard"></div>
+      </div>
+
+      <div id="card-area" class="card-area">
+        <div id="card-skeleton" class="skeleton" hidden></div>
+        <img id="card-image" alt="Carta Pokémon" hidden>
+        <div id="card-meta" class="card-meta"></div>
+      </div>
+
+      <div id="guess-form" class="guess-form"></div>
+
+      <button id="btn-reveal" class="btn-cta">Revelar precio</button>
+
+      <div id="reveal-area" class="reveal-area" hidden></div>
+
+      <button id="btn-next" class="btn-cta" hidden>Siguiente carta</button>
+    </section>
+
+    <section id="screen-final" class="panel" hidden>
+      <h2>Resultado final</h2>
+      <div id="final-ranking" class="ranking"></div>
+      <button id="btn-restart" class="btn-cta">Jugar de nuevo</button>
+    </section>
+
+    <div id="error-box" class="error-box" hidden>
+      <p id="error-msg"></p>
+      <button id="btn-retry" class="btn-secondary">Reintentar</button>
+    </div>
+
+    <!-- Sala online: pantallas independientes de las del modo mismo dispositivo -->
+    <section id="screen-online-setup" class="panel" hidden>
+      <button type="button" id="btn-online-volver" class="btn-volver">← Cambiar modo</button>
+      <h2>Sala online</h2>
+
+      <div class="field">
+        <span class="field-label">Tu nombre</span>
+        <input type="text" id="online-nombre" placeholder="Tu nombre">
+      </div>
+
+      <button id="btn-crear-sala" class="btn-cta">Crear sala nueva</button>
+
+      <div class="separador"><span>o</span></div>
+
+      <div class="field">
+        <span class="field-label">Código de sala</span>
+        <input type="text" id="online-codigo" class="codigo-input" placeholder="ABCD" maxlength="4" autocapitalize="characters">
+      </div>
+      <button id="btn-unirse-sala" class="btn-secondary">Unirse a una sala</button>
+    </section>
+
+    <section id="screen-lobby" class="panel" hidden>
+      <p class="field-label">Código de sala</p>
+      <p id="lobby-codigo" class="codigo-sala"></p>
+
+      <div id="lobby-jugadores" class="lobby-jugadores"></div>
+
+      <div id="lobby-config-host" hidden>
+        <div class="field">
+          <span class="field-label">Rondas</span>
+          <div id="lobby-rondas-picker" class="segmented" role="group" aria-label="Número de rondas">
+            <button type="button" class="segmented-option" data-value="5">5</button>
+            <button type="button" class="segmented-option" data-value="10">10</button>
+            <button type="button" class="segmented-option" data-value="15">15</button>
+          </div>
+        </div>
+        <button id="btn-lobby-empezar" class="btn-cta">Empezar partida</button>
+      </div>
+      <p id="lobby-espera-msg" class="modo-desc" hidden>Esperando a que el anfitrión empiece la partida…</p>
+    </section>
+
+    <section id="screen-online-round" class="panel" hidden>
+      <div class="round-header">
+        <span id="online-round-badge" class="badge"></span>
+        <div id="online-scoreboard" class="scoreboard"></div>
+      </div>
+
+      <div id="online-card-area" class="card-area">
+        <div id="online-card-skeleton" class="skeleton" hidden></div>
+        <img id="online-card-image" alt="Carta Pokémon" hidden>
+        <div id="online-card-meta" class="card-meta"></div>
+      </div>
+
+      <div id="online-guess-form" class="guess-form"></div>
+      <p id="online-espera-respuestas" class="modo-desc" hidden></p>
+
+      <button id="btn-online-enviar" class="btn-cta">Enviar estimación</button>
+
+      <div id="online-reveal-area" class="reveal-area" hidden></div>
+
+      <button id="btn-online-siguiente" class="btn-cta" hidden>Siguiente carta</button>
+      <p id="online-espera-siguiente" class="modo-desc" hidden>Esperando a que el anfitrión pase de ronda…</p>
+    </section>
+
+    <section id="screen-online-final" class="panel" hidden>
+      <h2>Resultado final</h2>
+      <div id="online-final-ranking" class="ranking"></div>
+      <button id="btn-online-restart" class="btn-cta">Volver al inicio</button>
+    </section>
+
+    <div id="online-error-box" class="error-box" hidden>
+      <p id="online-error-msg"></p>
+      <button id="btn-online-retry" class="btn-secondary">Volver a intentar</button>
+    </div>
+  </main>
+
+  <footer>
+    <p>Cartas y precios de <a href="https://pokemontcg.io" target="_blank" rel="noopener">pokemontcg.io</a> (datos de Cardmarket).</p>
+  </footer>
+
+  <script src="game.js"></script>
+  <script src="sala.js"></script>
+</body>
+</html>
