@@ -1,5 +1,5 @@
-const API_BASE = 'https://api.pokemontcg.io/v2/cards';
-const BATCH_SIZE = 50; // cartas por lote: pageSize=250 provoca 500 en el backend con demasiada frecuencia
+const API_BASE = 'https://api.tcgdex.net/v2/en';
+const BATCH_SIZE = 12;
 const REFILL_THRESHOLD = 5; // cuando quedan pocas cartas en cola, se rellena en segundo plano
 
 const state = {
@@ -169,13 +169,6 @@ async function fetchJSON(url, { retries = 2, timeoutMs = 8000 } = {}) {
   throw lastErr;
 }
 
-async function getTotalCount() {
-  if (state.totalCardCount) return state.totalCardCount;
-  const data = await fetchJSON(`${API_BASE}?pageSize=1`);
-  state.totalCardCount = data.totalCount;
-  return state.totalCardCount;
-}
-
 function shuffle(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -185,8 +178,16 @@ function shuffle(arr) {
 }
 
 function cardWithPrice(card) {
-  const price = card?.cardmarket?.prices?.trendPrice || card?.cardmarket?.prices?.averageSellPrice;
-  return price ? { card, price } : null;
+  const price = card?.pricing?.cardmarket?.trend || card?.pricing?.cardmarket?.avg;
+  if (!price || !card.image) return null;
+  return {
+    card: {
+      ...card,
+      images: { large: `${card.image}/high.png`, small: `${card.image}/low.png` },
+      set: { name: card.set?.name || '' },
+    },
+    price,
+  };
 }
 
 // Pide un lote de cartas de golpe (en vez de 1 carta por ronda): las páginas
@@ -196,12 +197,10 @@ function fetchBatch() {
   if (prefetchPromise) return prefetchPromise; // ya hay una petición en curso: reutilizarla
   prefetchPromise = (async () => {
     try {
-      const total = await getTotalCount();
-      const maxPage = Math.max(1, Math.ceil(total / BATCH_SIZE));
-      const page = 1 + Math.floor(Math.random() * maxPage);
-      const data = await fetchJSON(`${API_BASE}?pageSize=${BATCH_SIZE}&page=${page}`);
-      const cards = (data.data || []).map(cardWithPrice).filter(Boolean);
-      state.cardQueue.push(...shuffle(cards));
+      const summaries = await fetchJSON(`${API_BASE}/cards`);
+      const candidates = shuffle(summaries.filter(card => card.image)).slice(0, BATCH_SIZE);
+      const details = await Promise.all(candidates.map(card => fetchJSON(`${API_BASE}/cards/${card.id}`)));
+      state.cardQueue.push(...shuffle(details.map(cardWithPrice).filter(Boolean)));
     } finally {
       prefetchPromise = null;
     }
@@ -212,12 +211,11 @@ function fetchBatch() {
 // Último recurso si el lote falla tras los reintentos: pide cartas sueltas
 // (petición mucho más pequeña, con más posibilidades de responder bien).
 async function fetchSingleCard() {
-  const total = await getTotalCount();
   for (let i = 0; i < 3; i++) {
-    const page = 1 + Math.floor(Math.random() * total);
     try {
-      const data = await fetchJSON(`${API_BASE}?pageSize=1&page=${page}`, { retries: 1 });
-      const result = cardWithPrice(data.data && data.data[0]);
+      const summaries = await fetchJSON(`${API_BASE}/cards`);
+      const candidate = summaries[Math.floor(Math.random() * summaries.length)];
+      const result = cardWithPrice(await fetchJSON(`${API_BASE}/cards/${candidate.id}`, { retries: 1 }));
       if (result) return result;
     } catch (err) {
       // se prueba con otra página

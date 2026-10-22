@@ -1,10 +1,10 @@
 // Modo "sala online": varios jugadores, cada uno desde su dispositivo,
 // adivinando la misma carta a la vez. Habla por WebSocket con el Worker de
-// worker/ (Durable Object por sala). El worker es quien pide las cartas y
+// src/ (Durable Object por sala). El worker es quien pide las cartas y
 // decide el precio real, para que nadie pueda verlo antes de tiempo.
 
-// Sustituye esto por la URL que te da `wrangler deploy` (worker/README.md).
-const SALA_SERVER_URL = 'https://TU-SUBDOMINIO.workers.dev';
+// El mismo Worker sirve esta web y la sala, así que el servidor es este dominio.
+const SALA_SERVER_URL = window.location.origin;
 
 const salaState = {
   ws: null,
@@ -25,10 +25,6 @@ function ocultarTodasLasPantallas() {
   [screenModo, screenSetup, screenRound, screenFinal, errorBox,
    screenOnlineSetup, screenLobby, screenOnlineRound, screenOnlineFinal, onlineErrorBox]
     .forEach(s => { s.hidden = true; });
-}
-
-function servidorConfigurado() {
-  return !SALA_SERVER_URL.includes('TU-SUBDOMINIO');
 }
 
 function mostrarErrorOnline(mensaje) {
@@ -64,11 +60,6 @@ function volverAlInicio() {
 
 // ── Crear / unirse ───────────────────────────────────────────────────
 el('btn-crear-sala').addEventListener('click', async () => {
-  if (!servidorConfigurado()) {
-    mostrarErrorOnline('La sala online todavía no está configurada (falta desplegar el servidor). Mira worker/README.md.');
-    onlineErrorBox.hidden = false;
-    return;
-  }
   try {
     const res = await fetch(`${SALA_SERVER_URL}/crear`);
     if (!res.ok) throw new Error(`el servidor respondió ${res.status}`);
@@ -95,10 +86,6 @@ el('btn-online-retry').addEventListener('click', () => {
 });
 
 function conectar(codigo) {
-  if (!servidorConfigurado()) {
-    mostrarErrorOnline('La sala online todavía no está configurada (falta desplegar el servidor). Mira worker/README.md.');
-    return;
-  }
   salaState.codigo = codigo;
   salaState.cerrandoIntencionalmente = false;
 

@@ -3,6 +3,12 @@ main = "src/index.js"
 compatibility_date = "2026-08-17"
 workers_dev = true
 
+# La web (public/) y la sala online salen del mismo Worker y dominio: lo que
+# existe en public/ se sirve tal cual; /crear y /sala/<codigo> no son ficheros,
+# así que llegan al código de src/index.js.
+[assets]
+directory = "./public"
+
 [[durable_objects.bindings]]
 name = "SALAS"
 class_name = "SalaJuego"

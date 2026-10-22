@@ -1,5 +1,5 @@
-const API_BASE = 'https://api.pokemontcg.io/v2/cards';
-const BATCH_SIZE = 50;
+const API_BASE = 'https://api.tcgdex.net/v2/en';
+const BATCH_SIZE = 12;
 const CODIGO_ALFABETO = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sin 0/O ni 1/I/L, se lee fácil en voz alta
 
 function generarCodigo() {
@@ -28,18 +28,17 @@ async function fetchJSON(url, intentos = 3) {
 }
 
 function cardConPrecio(card) {
-  const precio = card?.cardmarket?.prices?.trendPrice || card?.cardmarket?.prices?.averageSellPrice;
-  return precio ? { card, precio } : null;
+  const precio = card?.pricing?.cardmarket?.trend || card?.pricing?.cardmarket?.avg;
+  return precio && card?.image ? { card, precio } : null;
 }
 
 // Misma estrategia que el cliente: un lote grande de una página aleatoria en
 // vez de 1 carta por ronda (paginación profunda de la API es lenta y poco fiable).
 async function obtenerLoteCartas() {
-  const { totalCount } = await fetchJSON(`${API_BASE}?pageSize=1`);
-  const maxPagina = Math.max(1, Math.ceil(totalCount / BATCH_SIZE));
-  const pagina = 1 + Math.floor(Math.random() * maxPagina);
-  const datos = await fetchJSON(`${API_BASE}?pageSize=${BATCH_SIZE}&page=${pagina}`);
-  return (datos.data || []).map(cardConPrecio).filter(Boolean);
+  const resumenes = await fetchJSON(`${API_BASE}/cards`);
+  const candidatos = resumenes.filter(c => c.image).sort(() => Math.random() - 0.5).slice(0, BATCH_SIZE);
+  const detalles = await Promise.all(candidatos.map(c => fetchJSON(`${API_BASE}/cards/${c.id}`)));
+  return detalles.map(cardConPrecio).filter(Boolean);
 }
 
 function puntosPorEstimacion(valor, real) {
@@ -172,7 +171,7 @@ export class SalaJuego {
         nombre: card.name,
         set: card.set?.name || '',
         rareza: card.rarity || 'Rareza desconocida',
-        imagen: card.images?.large || card.images?.small,
+        imagen: `${card.image}/high.png`,
       };
       this.sala.precioActual = precio;
       this.sala.fase = 'ronda';

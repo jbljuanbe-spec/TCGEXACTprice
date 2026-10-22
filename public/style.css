@@ -44,6 +44,13 @@
   --sobre-tinta: #12131f;
 }
 
+:root[data-tema="oscuro"] body {
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(255, 142, 54, .18) 0, rgba(255, 142, 54, 0) 28%),
+    radial-gradient(circle at 88% 88%, rgba(60, 109, 240, .25) 0, rgba(60, 109, 240, 0) 32%),
+    linear-gradient(135deg, #111527, #191d35);
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -51,11 +58,27 @@ body {
   font-family: var(--f-cuerpo);
   color: var(--tinta);
   background-color: var(--fondo);
-  background-image: radial-gradient(circle at 1px 1px, rgba(120, 128, 168, .16) 1px, transparent 0);
-  background-size: 24px 24px;
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(255, 174, 70, .42) 0, rgba(255, 174, 70, 0) 28%),
+    radial-gradient(circle at 88% 88%, rgba(65, 112, 244, .34) 0, rgba(65, 112, 244, 0) 32%),
+    linear-gradient(135deg, rgba(255, 255, 255, .66), rgba(226, 232, 250, .72));
+  background-attachment: fixed;
   min-height: 100vh;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .22;
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, .7) 25%, transparent 25%),
+    linear-gradient(315deg, rgba(255, 255, 255, .7) 25%, transparent 25%);
+  background-position: 0 0, 12px 12px;
+  background-size: 24px 24px;
+  mix-blend-mode: soft-light;
 }
 
 button { font-family: inherit; cursor: pointer; border: 0; color: inherit; }
@@ -280,7 +303,21 @@ input[type="text"]:focus, input[type="number"]:focus { border-color: var(--azul)
 }
 .score-chip b { font-family: var(--f-display); }
 
-.card-area { text-align: center; }
+.card-area {
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.card-area img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(62vh, 520px);
+  object-fit: contain;
+  margin: 0 auto;
+}
 
 .card-meta {
   margin-top: 10px;
@@ -290,8 +327,6 @@ input[type="text"]:focus, input[type="number"]:focus { border-color: var(--azul)
 }
 
 #card-image {
-  max-width: 100%;
-  max-height: 340px;
   border-radius: 12px;
   box-shadow: 0 10px 26px rgba(24, 27, 41, .22);
 }
@@ -424,6 +459,14 @@ footer {
   padding: 8px 14px 24px;
 }
 footer a { color: var(--suave); }
+footer .cafe {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  margin-top: 8px; padding: 7px 14px; width: fit-content;
+  background: var(--oro); border: 1px solid var(--oro); border-radius: 30px;
+  color: #fff; font-size: 12.5px; font-weight: 700; text-decoration: none;
+  transition: .14s;
+}
+footer .cafe:hover { filter: brightness(1.08); transform: translateY(-1px); }
 
 /* ── Selector de modo y sala online ───────────────────────────────── */
 .modo-desc {

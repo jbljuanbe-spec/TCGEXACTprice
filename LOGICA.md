@@ -6,26 +6,27 @@ Documento de referencia de cómo funciona el juego por dentro, para pensar el ap
 Adivinar el precio de mercado (Cardmarket) de una carta Pokémon mostrada al azar. Gana quien acumule más puntos tras varias rondas.
 
 ## Fuente de datos
-- API pública y gratuita: `https://api.pokemontcg.io/v2/cards` (sin clave, sin coste).
-- Por cada carta interesan: `name`, `set.name`, `rarity`, `images.large` / `images.small`, y el precio en `cardmarket.prices.trendPrice` (si no existe, se usa `cardmarket.prices.averageSellPrice`).
-- No toda carta tiene precio de Cardmarket (promos, cartas muy nuevas...), así que se descartan las que no lo tienen.
+- API pública y gratuita de TCGdex: `https://api.tcgdex.net/v2/en` (sin clave, sin coste). Sustituyó a pokemontcg.io, que daba errores 500 con frecuencia.
+- `GET /cards` devuelve el resumen de todas las cartas (`id`, `name`, `image`); `GET /cards/<id>` el detalle, con `rarity`, `set.name` y el precio en `pricing.cardmarket.trend` (si no existe, se usa `pricing.cardmarket.avg`).
+- La imagen es `<image>/high.png` (grande) o `<image>/low.png` (pequeña).
+- No toda carta tiene precio de Cardmarket ni imagen, así que se descartan las que no los tienen.
 
 ## Carga de cartas (rendimiento)
-Pedir 1 carta por ronda con página aleatoria era lento (paginación profunda). Un filtro de precio en el servidor (`q=cardmarket.prices...`) también daba error 500 y se quitó. Solución actual:
-1. Al abrir la app (pantalla de configuración) y cada vez que la cola de cartas baja de `REFILL_THRESHOLD` (5), se pide en segundo plano un **lote de 50 cartas** (`BATCH_SIZE`) de una página aleatoria, sin filtro de servidor. (Se probó con lotes de 250 pero provocaban 500 con más frecuencia — 50 es un punto intermedio razonable.)
-2. Ese lote se filtra en el cliente (solo cartas con precio) y se mezcla (`shuffle`) en una cola local (`state.cardQueue`).
+Solución actual:
+1. Al abrir la app (pantalla de configuración) y cada vez que la cola de cartas baja de `REFILL_THRESHOLD` (5), se pide en segundo plano un lote: el listado `/cards`, se eligen al azar `BATCH_SIZE` (12) cartas con imagen y se pide el detalle de cada una en paralelo.
+2. Ese lote se filtra (solo cartas con precio) y se mezcla (`shuffle`) en una cola local (`state.cardQueue`).
 3. Cada ronda simplemente saca la siguiente carta de la cola (`shift()`) — normalmente ya está en memoria, sin esperar red.
 4. Mientras se muestra una carta, se precargan (`new Image()`) las imágenes de las 2 siguientes de la cola, para que al pasar de ronda ya estén en caché del navegador.
 5. Con 5-15 rondas por partida, casi siempre bastan 1-2 lotes para toda la partida.
 
-**Reintentos:** la API de pokemontcg.io no tiene SLA y falla de forma intermitente (500, timeout). `fetchJSON` reintenta cada petición hasta 3 veces con backoff exponencial (400ms, 800ms) y aborta si tarda más de 8s. Si aun así el lote falla, `loadCard` cae a `fetchSingleCard` (pide 1 sola carta, petición más pequeña y con más probabilidad de responder) antes de mostrar el error final. Si el error persiste siempre y no de forma intermitente, es que la API está caída de verdad, no un bug del juego.
+**Reintentos:** la API de cartas no tiene SLA y falla de forma intermitente (500, timeout). `fetchJSON` reintenta cada petición hasta 3 veces con backoff exponencial (400ms, 800ms) y aborta si tarda más de 8s. Si aun así el lote falla, `loadCard` cae a `fetchSingleCard` (pide 1 sola carta, petición más pequeña y con más probabilidad de responder) antes de mostrar el error final. Si el error persiste siempre y no de forma intermitente, es que la API está caída de verdad, no un bug del juego.
 
 **Percepción de la espera:** mientras se carga (haya o no reintentos de por medio), en vez de un simple "Cargando...":
 - `#card-skeleton` muestra un bloque gris pulsante con el tamaño de una carta (`style.css`, animación `skeleton-pulse`), en vez de un hueco vacío o un icono de imagen rota.
 - `#card-meta` rota entre `LOADING_MESSAGES` cada 3s ("Buscando una carta al azar...", "Consultando el precio en Cardmarket...", "Casi lista...") para transmitir que el proceso avanza, no que se ha colgado.
 - La imagen no se muestra hasta que termina de descargarse (`waitForImage`, con `img.onload`/`onerror`), así no hay parpadeo de imagen a medio cargar.
 
-Si algún día se quiere garantizar variedad entre partidas distintas, el lote se pide de una página aleatoria dentro del total de cartas, así que cambia entre partidas.
+Las cartas de cada lote se eligen al azar entre todas las de TCGdex, así que cambian entre partidas.
 
 ## Flujo de pantallas
 `index.html` tiene un selector de modo (`#screen-modo`) y luego dos flujos de pantallas independientes que nunca coexisten visibles (todo con `hidden`):
@@ -97,9 +98,9 @@ El número de jugadores y de rondas ya no son `<select>`: son controles segmenta
 Toggle de tema: botón `#btn-theme` alterna `data-tema="claro"/"oscuro"` en `<html>` y lo guarda en `localStorage` (clave `ppj-tema`); sin elección manual, sigue el tema del sistema.
 
 ## Modo sala online
-Además del hotseat, cada jugador puede jugar desde su propio dispositivo (móvil, portátil...) con un código de sala de 4 caracteres, todos adivinando la misma carta a la vez. Necesita un backend — ver `worker/README.md` para desplegarlo. `sala.js` reutiliza `el()`, `wireSegmented()` y las referencias a las pantallas del modo local (`screenSetup`, etc.) que `game.js` deja en el ámbito global del script — por eso `game.js` se carga antes que `sala.js` en `index.html`.
+Además del hotseat, cada jugador puede jugar desde su propio dispositivo (móvil, portátil...) con un código de sala de 4 caracteres, todos adivinando la misma carta a la vez. El backend es el mismo Worker que sirve la web (ver `README.md`), así que `sala.js` se conecta a `window.location.origin` y no hay URL que configurar. `sala.js` reutiliza `el()`, `wireSegmented()` y las referencias a las pantallas del modo local (`screenSetup`, etc.) que `game.js` deja en el ámbito global del script — por eso `game.js` se carga antes que `sala.js` en `index.html`.
 
-**Por qué el servidor pide las cartas, no el navegador de cada jugador:** si cada cliente pidiera su propia carta, dos jugadores en la misma sala podrían acabar viendo cartas distintas, y cualquiera podría abrir las herramientas de desarrollador y ver el precio en la respuesta de la API antes de adivinar. El Worker (`worker/src/index.js`) hace exactamente lo mismo que hacía el cliente en modo local (lotes de 50 cartas, reintentos con backoff — ver la sección "Carga de cartas" de arriba) pero él es quien decide la carta y guarda el precio; a los jugadores solo les llega el precio cuando la ronda pasa a fase `revelado`.
+**Por qué el servidor pide las cartas, no el navegador de cada jugador:** si cada cliente pidiera su propia carta, dos jugadores en la misma sala podrían acabar viendo cartas distintas, y cualquiera podría abrir las herramientas de desarrollador y ver el precio en la respuesta de la API antes de adivinar. El Worker (`src/index.js`) hace exactamente lo mismo que hacía el cliente en modo local (lotes de 12 cartas, reintentos con backoff — ver la sección "Carga de cartas" de arriba) pero él es quien decide la carta y guarda el precio; a los jugadores solo les llega el precio cuando la ronda pasa a fase `revelado`.
 
 **Arquitectura:** un Durable Object de Cloudflare (`SalaJuego`) por código de sala (`env.SALAS.idFromName(codigo)`), sin base de datos — el estado vive en `this.state.storage` mientras dura la partida. Cada jugador abre un WebSocket a `/sala/<codigo>`; el servidor es la única fuente de verdad y, ante cualquier cambio, difunde el estado completo a todos los conectados (`difundir()`) — no hay diffs ni parches, cada mensaje `estado` es un snapshot autosuficiente, así que un cliente que se ha perdido un mensaje se pone al día con el siguiente sin lógica especial.
 
@@ -115,4 +116,4 @@ Además del hotseat, cada jugador puede jugar desde su propio dispositivo (móvi
 
 **Limitación conocida:** un código de sala no se valida contra una lista de salas existentes — se crea el momento en que alguien se conecta a él (`idFromName` de Durable Objects es así: perezoso). Si alguien teclea mal el código, no hay error de "sala no encontrada": entra a una sala nueva vacía, sin más jugadores. Aceptable para jugar con amigos que se dictan el código en voz alta; si molestara, se arreglaría registrando los códigos activos en un Workers KV con expiración.
 
-**Probado con `wrangler dev` en local** (Durable Object real, API de cartas simulada, sin tocar Cloudflare ni la red real): protocolo WebSocket puro (2 clientes simulados) y también la interfaz real con 2 pestañas de navegador (Playwright) — lobby con 2 jugadores, ambos ven la misma carta, ninguno ve el precio ni la respuesta del otro antes de tiempo, revelado con puntos correctos, solo el host ve "siguiente carta", desconexión de un jugador a media ronda (la sala no se queda esperándolo), reconexión con el mismo id conservando puntuación y estimación ya enviada, y partida completa hasta el ranking final. No probado contra pokemontcg.io real ni contra Cloudflare en producción — recomendable jugar una partida real tras desplegar.
+**Probado con `wrangler dev` en local** (Durable Object real, API de cartas simulada, sin tocar Cloudflare ni la red real): protocolo WebSocket puro (2 clientes simulados) y también la interfaz real con 2 pestañas de navegador (Playwright) — lobby con 2 jugadores, ambos ven la misma carta, ninguno ve el precio ni la respuesta del otro antes de tiempo, revelado con puntos correctos, solo el host ve "siguiente carta", desconexión de un jugador a media ronda (la sala no se queda esperándolo), reconexión con el mismo id conservando puntuación y estimación ya enviada, y partida completa hasta el ranking final. No probado contra TCGdex real ni contra Cloudflare en producción — recomendable jugar una partida real tras desplegar.

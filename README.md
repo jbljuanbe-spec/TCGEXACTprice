@@ -1,26 +1,40 @@
 # Precio Justo Pokémon
 
 Adivina el precio de mercado de Cardmarket de una carta Pokémon al azar, por rondas. Dos modos:
-- **Mismo dispositivo**: 1 a 4 jugadores pasándose el móvil/portátil (hotseat).
-- **Sala online**: cada jugador desde su propio dispositivo, con un código de sala, adivinando todos a la vez.
+- **Mismo dispositivo**: 1 a 4 jugadores pasándose el móvil/portátil.
+- **Sala online**: cada jugador desde su dispositivo, con un código de sala, adivinando todos a la vez.
 
-Jugar: https://jbljuanbe-spec.github.io/ITEX-GAME/pokemon-precio-justo/
-
-## Cómo funciona
-- Cada ronda pide una carta aleatoria con precio a la API pública de [pokemontcg.io](https://pokemontcg.io), que incluye los precios de Cardmarket (`cardmarket.prices`).
-- Cada jugador introduce su estimación en euros.
-- Al revelar, se compara con el precio real (`trendPrice`, o `averageSellPrice` si no hay trend) y se reparten puntos según el error: 100 pts si aciertas exacto, 0 pts si el error es ≥100%.
-- Tras el número de rondas elegido, gana quien más puntos acumule.
+Un único Cloudflare Worker sirve la web y la sala online desde el mismo dominio, así que no hay ninguna URL que configurar.
 
 ## Estructura
-`index.html`, `style.css`, `game.js` (modo mismo dispositivo), `sala.js` (modo sala online). Sitio estático sin dependencias — el modo local pide las cartas directamente desde el navegador del jugador.
+```
+public/          la web (index.html, style.css, game.js, sala.js)
+src/index.js     el Worker: /crear y /sala/<codigo> (Durable Object por sala)
+wrangler.toml    config de Cloudflare (assets = public/, Durable Object SALAS)
+LOGICA.md        cómo funciona el juego por dentro
+```
 
-El modo sala online necesita un pequeño backend (Cloudflare Worker + Durable Objects) para poder sincronizar a los jugadores en tiempo real — está en `worker/`, con sus propias instrucciones de despliegue en `worker/README.md`. Sin desplegarlo, el modo mismo dispositivo funciona igual que siempre; solo el botón de sala online avisa de que falta configurar el servidor.
+## Desplegar
+Desde la raíz del repo:
 
-## Rendimiento y fiabilidad
-Pedir una carta por ronda (con `page` aleatorio y `pageSize=1`) era lento. Ahora se piden lotes de 50 cartas sin filtro de servidor, se filtran en el cliente las que tienen precio de Cardmarket, y se guardan en una cola local; la mayoría de partidas (5-15 rondas) se juegan enteras con 1-2 lotes.
+```bash
+npm install
+npx wrangler login     # solo la primera vez
+npx wrangler deploy
+```
 
-La API de pokemontcg.io no tiene SLA y da error 500 o timeout de vez en cuando, sobre todo sin API key. Por eso cada petición reintenta con backoff (hasta 3 intentos) y, si el lote sigue fallando, cae a pedir una carta suelta antes de rendirse. Si el error 500 persiste siempre (no de forma intermitente), es la API la que está caída — revisar `LOGICA.md` y la consola del navegador para el detalle exacto (status/cuerpo de la respuesta).
+Al terminar, wrangler imprime la URL (`https://pokemon-precio-justo-sala.<tu-subdominio>.workers.dev`). Copia esa, no la escribas a mano: el subdominio es el de tu cuenta de Cloudflare (Workers & Pages → tu cuenta → subdominio workers.dev), no tiene por qué coincidir con tu usuario de GitHub.
 
-## Notas
-- La API de pokemontcg.io no requiere clave para uso puntual (límite ~30 peticiones/min). Si se juega mucho, se puede añadir una API key gratuita como cabecera `X-Api-Key`.
+Con la integración de Git de Cloudflare (Workers & Pages → Create → Import a repository) funciona igual: directorio raíz `/`, comando de deploy `npx wrangler deploy`.
+
+## Probar en local
+```bash
+npx wrangler dev
+```
+Abre `http://localhost:8787`: misma web y misma sala, con el Durable Object simulado en local.
+
+## Datos
+Cartas e imágenes de [TCGdex](https://tcgdex.dev) (API gratuita, sin clave), precios de Cardmarket incluidos en la propia API. El modo mismo dispositivo los pide desde el navegador; en la sala online los pide el Worker, para que todos vean la misma carta y nadie vea el precio antes de tiempo. Detalle en `LOGICA.md`.
+
+## Limitación conocida
+Un código de sala se crea en cuanto alguien se conecta a él. Si alguien teclea mal el código, entra a una sala nueva vacía en vez de recibir un error.
