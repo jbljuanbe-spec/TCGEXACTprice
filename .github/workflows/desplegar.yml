@@ -1,0 +1,117 @@
+# Despliega el Worker de Precio Justo (web de public/ + sala online) con
+# `wrangler deploy`. Necesita los secretos del repositorio:
+#   CLOUDFLARE_API_TOKEN  – token con Workers Scripts:Edit
+#   CLOUDFLARE_ACCOUNT_ID – ID de la cuenta de Cloudflare
+#
+# Lanzado a mano con modo "diagnostico" no despliega: lista los Workers de la
+# cuenta, prueba las URLs públicas y compara lo publicado con el repositorio.
+name: Desplegar en Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'diagnostico = solo mirar; desplegar = desplegar ahora'
+        type: choice
+        options: [diagnostico, desplegar]
+        default: diagnostico
+      forzar:
+        description: 'Desplegar aunque la web publicada tenga ficheros que no están en el repo (los pisará).'
+        type: boolean
+        default: false
+
+concurrency:
+  group: despliegue-produccion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  WORKER: pokemon-precio-justo-sala
+  URL: https://pokemon-precio-justo-sala.jbljuanbe.workers.dev
+
+jobs:
+  desplegar:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Comprobar secretos
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Faltan los secretos CLOUDFLARE_API_TOKEN y/o CLOUDFLARE_ACCOUNT_ID (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+
+      - name: Diagnóstico de la cuenta y las URLs
+        run: |
+          echo "Workers de la cuenta:"
+          curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts" \
+            | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);if(!j.success){console.log("  (no se pudo listar:",JSON.stringify(j.errors),")");return;}for(const w of j.result)console.log("  -",w.id,"· modificado",w.modified_on);})'
+          for u in https://pokemon-precio-justo-sala.jbljuanbe.workers.dev/ https://pokemon-precio-justo.jbljuanbe.workers.dev/; do
+            echo "$u → HTTP $(curl -sS -o /dev/null -w '%{http_code}' -m 20 "$u" || echo error)"
+          done
+
+      - name: Comprobar sintaxis
+        run: |
+          for f in src/*.js public/*.js; do
+            [ -f "$f" ] || continue
+            node --input-type=module --check < "$f" || { echo "::error file=$f::Error de sintaxis"; exit 1; }
+          done
+
+      # Lo publicado en public/ tiene que coincidir con el main anterior o con
+      # el actual; si no, alguien desplegó desde otra copia y no se pisa.
+      - name: Comparar lo publicado con el repositorio
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.forzar) }}
+        env:
+          ANTES: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          BASE="${ANTES:-$(git rev-parse HEAD~1)}"
+          git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --depth=1 origin "$BASE"
+          curl -sSL --fail -m 30 "$URL/" -o "$RUNNER_TEMP/portada" || { echo "::warning::La web no responde; no hay nada que comparar."; exit 0; }
+          distintos=0
+          for f in $(git ls-files public); do
+            ruta="${f#public/}"; [ "$ruta" = "index.html" ] && ruta=""
+            if ! curl -sSL --fail -m 30 "$URL/$ruta" -o "$RUNNER_TEMP/p"; then echo "nuevo: $f"; continue; fi
+            if [ -n "$ruta" ] && cmp -s "$RUNNER_TEMP/p" "$RUNNER_TEMP/portada"; then echo "nuevo: $f"; continue; fi
+            if cmp -s "$RUNNER_TEMP/p" "$f" || git show "$BASE:$f" 2>/dev/null | cmp -s "$RUNNER_TEMP/p" -; then echo "igual: $f"; else echo "DISTINTO: $f"; distintos=1; fi
+          done
+          if [ "$distintos" = 1 ]; then
+            echo "::error::La web publicada tiene ficheros que no coinciden con el repositorio. No se despliega para no pisarlos."
+            exit 1
+          fi
+
+      - name: Desplegar el Worker
+        if: ${{ github.event_name == 'push' || inputs.modo == 'desplegar' }}
+        run: npx --yes wrangler@4 deploy --message "$(git log -1 --format=%s | cut -c1-100)"
+
+      - name: Verificar lo publicado
+        if: ${{ github.event_name == 'push' || inputs.modo == 'desplegar' }}
+        run: |
+          set -uo pipefail
+          for intento in 1 2 3 4 5 6; do
+            sleep 15
+            n=0
+            for f in $(git ls-files public); do
+              ruta="${f#public/}"; [ "$ruta" = "index.html" ] && ruta=""
+              curl -sSL --fail -m 30 "$URL/$ruta?verificar=$GITHUB_SHA" -o "$RUNNER_TEMP/p" && cmp -s "$RUNNER_TEMP/p" "$f" || { n=$((n+1)); echo "  pendiente: $f"; }
+            done
+            echo "Intento $intento: $n ficheros todavía distintos"
+            [ "$n" -eq 0 ] && { echo "Web idéntica al commit $GITHUB_SHA."; exit 0; }
+          done
+          echo "::error::Tras el despliegue, la web no coincide con el repositorio."
+          exit 1
