@@ -32,13 +32,72 @@ function cardConPrecio(card) {
   return precio && card?.image ? { card, precio } : null;
 }
 
-// Misma estrategia que el cliente: un lote grande de una página aleatoria en
-// vez de 1 carta por ronda (paginación profunda de la API es lenta y poco fiable).
-async function obtenerLoteCartas() {
+function mezclar(lista) {
+  for (let i = lista.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [lista[i], lista[j]] = [lista[j], lista[i]];
+  }
+  return lista;
+}
+
+// `GET /cards` devuelve el resumen de TODAS las cartas de TCGdex (~20.000,
+// varios MB). Parsear eso no cabe en los 10 ms de CPU de un Worker gratuito.
+// En su lugar: listado de expansiones (pequeño, cacheado en el isolate), una
+// expansión al azar ponderada por su número de cartas (así cada carta tiene la
+// misma probabilidad que antes) y solo las cartas de esa expansión.
+let expansionesCache = null;
+
+async function expansionesConCartas() {
+  if (expansionesCache) return expansionesCache;
+  const sets = await fetchJSON(`${API_BASE}/sets`);
+  const utiles = (Array.isArray(sets) ? sets : []).filter(s => s?.id && (s.cardCount?.total ?? 0) > 0);
+  if (!utiles.length) throw new Error('La API no devolvió expansiones');
+  expansionesCache = utiles;
+  return utiles;
+}
+
+function expansionAlAzar(sets) {
+  const total = sets.reduce((suma, s) => suma + s.cardCount.total, 0);
+  let r = Math.random() * total;
+  for (const s of sets) {
+    r -= s.cardCount.total;
+    if (r <= 0) return s;
+  }
+  return sets[sets.length - 1];
+}
+
+async function cartasDeExpansionAlAzar() {
+  const sets = await expansionesConCartas();
+  // Algunas expansiones antiguas o promocionales no traen precios: si una no
+  // da nada, se prueba con otra antes de rendirse.
+  for (let intento = 0; intento < 3; intento++) {
+    const set = await fetchJSON(`${API_BASE}/sets/${encodeURIComponent(expansionAlAzar(sets).id)}`);
+    const candidatos = mezclar((set?.cards ?? []).filter(c => c?.id && c.image)).slice(0, BATCH_SIZE);
+    const detalles = await Promise.all(candidatos.map(c =>
+      fetchJSON(`${API_BASE}/cards/${encodeURIComponent(c.id)}`, 2).catch(() => null)));
+    const conPrecio = detalles.map(cardConPrecio).filter(Boolean);
+    if (conPrecio.length) return conPrecio;
+  }
+  return [];
+}
+
+// Camino antiguo, intacto, como red de seguridad: si el nuevo fallara por lo
+// que sea, el juego se comporta exactamente como antes de este cambio.
+async function cartasDelListadoCompleto() {
   const resumenes = await fetchJSON(`${API_BASE}/cards`);
-  const candidatos = resumenes.filter(c => c.image).sort(() => Math.random() - 0.5).slice(0, BATCH_SIZE);
+  const candidatos = mezclar(resumenes.filter(c => c.image)).slice(0, BATCH_SIZE);
   const detalles = await Promise.all(candidatos.map(c => fetchJSON(`${API_BASE}/cards/${c.id}`)));
   return detalles.map(cardConPrecio).filter(Boolean);
+}
+
+async function obtenerLoteCartas() {
+  try {
+    const lote = await cartasDeExpansionAlAzar();
+    if (lote.length) return lote;
+  } catch {
+    // se cae al camino antiguo
+  }
+  return cartasDelListadoCompleto();
 }
 
 function puntosPorEstimacion(valor, real) {
@@ -61,6 +120,13 @@ export class SalaJuego {
   async cargarSala() {
     if (this.sala) return this.sala;
     const guardada = await this.state.storage.get('sala');
+    if (guardada) {
+      // Instancia nueva (Cloudflare reinició la sala): los WebSocket de antes
+      // ya no existen aunque el almacenamiento diga `conectado: true`. Si no se
+      // limpia, la ronda espera para siempre a jugadores fantasma. Quien siga
+      // ahí se reconecta solo a los 2 s (sala.js) y vuelve a quedar conectado.
+      for (const j of Object.values(guardada.jugadores ?? {})) j.conectado = false;
+    }
     this.sala = guardada || {
       fase: 'lobby', // lobby | ronda | revelado | final
       hostId: null,
@@ -93,7 +159,9 @@ export class SalaJuego {
     servidor.accept();
 
     await this.cargarSala();
-    if (!this.sala.hostId) this.sala.hostId = jugadorId;
+    // Si el anfitrión no está conectado, quien entra pasa a serlo: una sala sin
+    // nadie que pueda pulsar "empezar" o "siguiente" se queda bloqueada.
+    if (!this.sala.hostId || !this.sala.jugadores[this.sala.hostId]?.conectado) this.sala.hostId = jugadorId;
     if (this.sala.jugadores[jugadorId]) {
       this.sala.jugadores[jugadorId].conectado = true;
       this.sala.jugadores[jugadorId].nombre = nombre;
@@ -120,9 +188,24 @@ export class SalaJuego {
     await this.cargarSala();
     if (this.sala.jugadores[jugadorId]) {
       this.sala.jugadores[jugadorId].conectado = false;
+      if (this.sala.hostId === jugadorId) {
+        const relevo = Object.entries(this.sala.jugadores).find(([, j]) => j.conectado)?.[0];
+        if (relevo) this.sala.hostId = relevo;
+      }
+      // Si quien faltaba por responder era el que se ha ido, la ronda se
+      // resuelve ya con los que quedan en vez de esperar a nadie.
+      if (this.sala.fase === 'ronda' && this.todosHanRespondido()) {
+        await this.revelar();
+        return;
+      }
       await this.guardarSala();
       this.difundir();
     }
+  }
+
+  todosHanRespondido() {
+    const conectados = Object.entries(this.sala.jugadores).filter(([, j]) => j.conectado).map(([id]) => id);
+    return conectados.length > 0 && conectados.every(id => id in this.sala.estimaciones);
   }
 
   enviarA(jugadorId, mensaje) {
@@ -145,28 +228,30 @@ export class SalaJuego {
       await this.guardarSala();
       this.difundir();
     } else if (msg.tipo === 'empezar' && esHost && this.sala.fase === 'lobby') {
-      this.sala.rondaActual = 1;
-      await this.cargarSiguienteCarta();
+      await this.cargarSiguienteCarta(1);
     } else if (msg.tipo === 'adivinar' && this.sala.fase === 'ronda') {
       await this.registrarEstimacion(jugadorId, Number(msg.valor));
     } else if (msg.tipo === 'siguiente' && esHost && this.sala.fase === 'revelado') {
-      this.sala.rondaActual++;
-      if (this.sala.rondaActual > this.sala.totalRondas) {
+      if (this.sala.rondaActual + 1 > this.sala.totalRondas) {
         this.sala.fase = 'final';
         await this.guardarSala();
         this.difundir();
       } else {
-        await this.cargarSiguienteCarta();
+        await this.cargarSiguienteCarta(this.sala.rondaActual + 1);
       }
     }
   }
 
-  async cargarSiguienteCarta() {
+  // La ronda solo avanza cuando la carta ya está cargada. Antes se sumaba
+  // primero, y si la API fallaba el reintento del anfitrión se saltaba una ronda.
+  async cargarSiguienteCarta(ronda) {
     try {
-      if (this.sala.cardQueue.length === 0) {
+      for (let intento = 0; this.sala.cardQueue.length === 0 && intento < 2; intento++) {
         this.sala.cardQueue = await obtenerLoteCartas();
       }
+      if (this.sala.cardQueue.length === 0) throw new Error('ninguna carta con precio');
       const { card, precio } = this.sala.cardQueue.shift();
+      this.sala.rondaActual = ronda;
       this.sala.cartaActual = {
         nombre: card.name,
         set: card.set?.name || '',
@@ -196,9 +281,7 @@ export class SalaJuego {
     this.sala.estimaciones[jugadorId] = valor;
     await this.guardarSala();
 
-    const conectados = Object.entries(this.sala.jugadores).filter(([, j]) => j.conectado).map(([id]) => id);
-    const todosListos = conectados.length > 0 && conectados.every(id => id in this.sala.estimaciones);
-    if (todosListos) {
+    if (this.todosHanRespondido()) {
       await this.revelar();
     } else {
       this.difundir();

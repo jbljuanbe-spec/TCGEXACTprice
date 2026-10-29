@@ -193,14 +193,60 @@ function cardWithPrice(card) {
 // Pide un lote de cartas de golpe (en vez de 1 carta por ronda): las páginas
 // profundas de 1 en 1 son lentas, y con un puñado de lotes basta para toda
 // la partida.
+// `GET /cards` es el listado de TODAS las cartas (~20.000, varios MB): en un
+// móvil eso son segundos de descarga en cada lote. Se pide el listado de
+// expansiones (pequeño, una vez por sesión), una expansión al azar ponderada
+// por su número de cartas y solo las cartas de esa expansión.
+let setsCache = null;
+
+async function setsWithCards() {
+  if (setsCache) return setsCache;
+  const sets = await fetchJSON(`${API_BASE}/sets`);
+  const usable = (Array.isArray(sets) ? sets : []).filter(s => s?.id && (s.cardCount?.total ?? 0) > 0);
+  if (!usable.length) throw new Error('La API no devolvió expansiones');
+  setsCache = usable;
+  return usable;
+}
+
+function randomSet(sets) {
+  const total = sets.reduce((sum, s) => sum + s.cardCount.total, 0);
+  let r = Math.random() * total;
+  for (const s of sets) {
+    r -= s.cardCount.total;
+    if (r <= 0) return s;
+  }
+  return sets[sets.length - 1];
+}
+
+async function batchFromRandomSet() {
+  const sets = await setsWithCards();
+  for (let i = 0; i < 3; i++) {
+    const set = await fetchJSON(`${API_BASE}/sets/${encodeURIComponent(randomSet(sets).id)}`);
+    const candidates = shuffle((set?.cards ?? []).filter(c => c?.id && c.image)).slice(0, BATCH_SIZE);
+    const details = await Promise.all(candidates.map(c =>
+      fetchJSON(`${API_BASE}/cards/${encodeURIComponent(c.id)}`, { retries: 1 }).catch(() => null)));
+    const priced = details.map(cardWithPrice).filter(Boolean);
+    if (priced.length) return priced;
+  }
+  return [];
+}
+
+// Camino antiguo, intacto: solo se usa si el nuevo falla.
+async function batchFromFullList() {
+  const summaries = await fetchJSON(`${API_BASE}/cards`);
+  const candidates = shuffle(summaries.filter(card => card.image)).slice(0, BATCH_SIZE);
+  const details = await Promise.all(candidates.map(card => fetchJSON(`${API_BASE}/cards/${card.id}`)));
+  return details.map(cardWithPrice).filter(Boolean);
+}
+
 function fetchBatch() {
   if (prefetchPromise) return prefetchPromise; // ya hay una petición en curso: reutilizarla
   prefetchPromise = (async () => {
     try {
-      const summaries = await fetchJSON(`${API_BASE}/cards`);
-      const candidates = shuffle(summaries.filter(card => card.image)).slice(0, BATCH_SIZE);
-      const details = await Promise.all(candidates.map(card => fetchJSON(`${API_BASE}/cards/${card.id}`)));
-      state.cardQueue.push(...shuffle(details.map(cardWithPrice).filter(Boolean)));
+      let batch = [];
+      try { batch = await batchFromRandomSet(); } catch { /* se cae al camino antiguo */ }
+      if (!batch.length) batch = await batchFromFullList();
+      state.cardQueue.push(...shuffle(batch));
     } finally {
       prefetchPromise = null;
     }
@@ -213,7 +259,8 @@ function fetchBatch() {
 async function fetchSingleCard() {
   for (let i = 0; i < 3; i++) {
     try {
-      const summaries = await fetchJSON(`${API_BASE}/cards`);
+      const set = await fetchJSON(`${API_BASE}/sets/${encodeURIComponent(randomSet(await setsWithCards()).id)}`);
+      const summaries = (set?.cards ?? []).filter(c => c?.id);
       const candidate = summaries[Math.floor(Math.random() * summaries.length)];
       const result = cardWithPrice(await fetchJSON(`${API_BASE}/cards/${candidate.id}`, { retries: 1 }));
       if (result) return result;
