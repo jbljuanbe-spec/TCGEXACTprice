@@ -7,13 +7,14 @@ Adivinar el precio de mercado (Cardmarket) de una carta Pokémon mostrada al aza
 
 ## Fuente de datos
 - API pública y gratuita de TCGdex: `https://api.tcgdex.net/v2/en` (sin clave, sin coste). Sustituyó a pokemontcg.io, que daba errores 500 con frecuencia.
-- `GET /cards` devuelve el resumen de todas las cartas (`id`, `name`, `image`); `GET /cards/<id>` el detalle, con `rarity`, `set.name` y el precio en `pricing.cardmarket.trend` (si no existe, se usa `pricing.cardmarket.avg`).
+- `GET /sets` devuelve las expansiones con su `cardCount.total`; `GET /sets/<id>` las cartas de una expansión (`id`, `name`, `image`); `GET /cards/<id>` el detalle, con `rarity`, `set.name` y el precio en `pricing.cardmarket.trend` (si no existe, se usa `pricing.cardmarket.avg`).
+- `GET /cards` (el resumen de TODAS las cartas, ~20.000, varios MB) ya no se usa salvo como respaldo: es demasiado pesado para un móvil en cada lote y no cabe en los 10 ms de CPU de un Worker gratuito.
 - La imagen es `<image>/high.png` (grande) o `<image>/low.png` (pequeña).
 - No toda carta tiene precio de Cardmarket ni imagen, así que se descartan las que no los tienen.
 
 ## Carga de cartas (rendimiento)
 Solución actual:
-1. Al abrir la app (pantalla de configuración) y cada vez que la cola de cartas baja de `REFILL_THRESHOLD` (5), se pide en segundo plano un lote: el listado `/cards`, se eligen al azar `BATCH_SIZE` (12) cartas con imagen y se pide el detalle de cada una en paralelo.
+1. Al abrir la app (pantalla de configuración) y cada vez que la cola de cartas baja de `REFILL_THRESHOLD` (5), se pide en segundo plano un lote: el listado `/sets` (una vez por sesión, se cachea), una expansión al azar ponderada por su número de cartas (así cada carta tiene la misma probabilidad), y de ella `BATCH_SIZE` (12) cartas con imagen, cuyo detalle se pide en paralelo. Si la expansión no da ninguna carta con precio se prueba con otra (hasta 3). Si este camino falla entero, se cae al antiguo (`/cards`), así que en el peor caso el juego se comporta como antes.
 2. Ese lote se filtra (solo cartas con precio) y se mezcla (`shuffle`) en una cola local (`state.cardQueue`).
 3. Cada ronda simplemente saca la siguiente carta de la cola (`shift()`) — normalmente ya está en memoria, sin esperar red.
 4. Mientras se muestra una carta, se precargan (`new Image()`) las imágenes de las 2 siguientes de la cola, para que al pasar de ronda ya estén en caché del navegador.
@@ -106,9 +107,13 @@ Además del hotseat, cada jugador puede jugar desde su propio dispositivo (móvi
 
 **Fases de una sala** (`sala.fase`): `lobby` (esperando jugadores, el anfitrión configura rondas) → `ronda` (carta visible, precio oculto, cada uno manda su estimación) → `revelado` (precio + estimaciones + puntos de todos, el anfitrión pasa a la siguiente) → `final`. `cargarSiguienteCarta()` es el único sitio donde se pone `fase = 'ronda'`, tanto al empezar la partida como en cada "siguiente carta" — ojo si se toca, un bug ahí (fase que no vuelve a `ronda`) deja la sala congelada en `revelado` a partir de la ronda 2 (así se encontró, ver commit).
 
-**Anfitrión (host):** el primer jugador en conectar (`sala.hostId`), no cambia aunque se desconecte — no hay traspaso de anfitrión. Solo el host puede mandar `configurar`, `empezar` y `siguiente`; el servidor ignora esos mensajes de cualquier otro `jugadorId` (`esHost` se comprueba en cada mensaje).
+**Anfitrión (host):** el primer jugador en conectar (`sala.hostId`). Si se desconecta, el anfitrión pasa al siguiente jugador conectado; y si alguien entra en una sala cuyo anfitrión no está conectado, pasa a serlo él. Así una sala nunca se queda sin nadie que pueda pulsar "empezar" o "siguiente". Solo el host puede mandar `configurar`, `empezar` y `siguiente`; el servidor ignora esos mensajes de cualquier otro `jugadorId` (`esHost` se comprueba en cada mensaje).
 
-**Quién completa una ronda:** el servidor no espera a "todos los jugadores de la sala", solo a los que tienen `conectado: true` en ese momento (`registrarEstimacion`). Si alguien se desconecta a media ronda, el resto no se queda esperando indefinidamente — la ronda se resuelve solo con los que siguen conectados en cuanto todos ellos han respondido.
+**Quién completa una ronda:** el servidor no espera a "todos los jugadores de la sala", solo a los que tienen `conectado: true` en ese momento (`todosHanRespondido`). Se comprueba al recibir una estimación y también al desconectarse alguien: si el único que faltaba por responder se va, la ronda se resuelve en ese momento con los que quedan.
+
+**Reinicio de la sala:** Cloudflare puede reiniciar el Durable Object. Al cargar la sala desde el almacenamiento en una instancia nueva, todos los jugadores se marcan `conectado: false` (sus WebSocket ya no existen); cada uno vuelve a quedar conectado al reconectarse solo a los 2 s. Sin esto la ronda esperaba para siempre a jugadores fantasma.
+
+**Carga de carta y número de ronda:** `cargarSiguienteCarta(ronda)` solo fija `rondaActual` cuando ya tiene la carta. Si la API falla, la sala se queda en la fase en la que estaba (`lobby` o `revelado`) y el anfitrión puede reintentar sin saltarse ninguna ronda.
 
 **Reconexión:** el cliente genera un id (`crypto.randomUUID()`, lo manda el propio servidor en el mensaje `tu-id`) y lo guarda en `localStorage` por código de sala (`ppj-sala-id-<codigo>`). Si el WebSocket se cierra sin que el jugador haya pulsado "volver" (`sala.js`, `cerrandoIntencionalmente`), reintenta solo a los 2s con el mismo id — el servidor lo reconoce (`this.sala.jugadores[jugadorId]` ya existe), actualiza `conectado: true` y el jugador recupera su puntuación y, si la ronda seguía abierta, su estimación ya enviada.
 
